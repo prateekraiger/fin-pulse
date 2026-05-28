@@ -4,13 +4,13 @@ A desktop-first web application built on **React Router 7**, **Vite**, and **Tai
 
 ## 🚀 Tech Stack & Core Libraries
 
-* **Core Framework**: [React Router 7](https://reactrouter.com/) (using Vite bundler integrations)
-* **Build Tool**: [Vite](https://vitejs.dev/)
-* **Styling**: Tailwind CSS
-* **State Management**: [Zustand](https://github.com/pmndrs/zustand)
-* **Data Fetching**: [TanStack React Query](https://tanstack.com/query)
-* **Data Visualization**: [Recharts](https://recharts.org/)
-* **Testing**: [Vitest](https://vitest.dev/)
+- **Core Framework**: [React Router 7](https://reactrouter.com/) (using Vite bundler integrations)
+- **Build Tool**: [Vite](https://vitejs.dev/)
+- **Styling**: Tailwind CSS
+- **State Management**: [Zustand](https://github.com/pmndrs/zustand)
+- **Data Fetching**: [TanStack React Query](https://tanstack.com/query)
+- **Data Visualization**: [Recharts](https://recharts.org/)
+- **Testing**: [Vitest](https://vitest.dev/)
 
 ---
 
@@ -50,16 +50,19 @@ Ensure you have Node.js (v18+) installed.
 ### Setup and Installation
 
 1. Navigate to the web directory:
+
    ```bash
    cd web
    ```
 
 2. Install dependencies:
+
    ```bash
    npm install
    ```
 
 3. Run the Vite development server:
+
    ```bash
    npm run dev
    ```
@@ -75,5 +78,5 @@ Ensure you have Node.js (v18+) installed.
 
 This project implements dynamic route generation. Instead of manually registering every route in a central file, `src/app/routes.ts` crawls the `src/app` directory tree at build time and automatically registers any `page.jsx` file as an active route.
 
-* Dynamic parameters (e.g., `:id`) are designated by folder names with square brackets: `[id]`.
-* Catch-all parameters are denoted with triple dots: `[...ids]`.
+- Dynamic parameters (e.g., `:id`) are designated by folder names with square brackets: `[id]`.
+- Catch-all parameters are denoted with triple dots: `[...ids]`.

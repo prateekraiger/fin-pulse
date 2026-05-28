@@ -1,8 +1,8 @@
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { RouteConfigEntry } from '@react-router/dev/routes';
 import {
-	type RouteConfigEntry,
 	index,
 	route,
 } from '@react-router/dev/routes';

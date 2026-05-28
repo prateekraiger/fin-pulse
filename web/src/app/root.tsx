@@ -39,7 +39,7 @@ export const links = () => [];
 
 export function meta() {
   return [
-    { title: "FinPulse - Financial & Compliance Dashboard" },
+    { title: "FinPulse" },
     { name: "description", content: "Premium income, expense, invoice, and tax tracking platform." },
   ];
 }
