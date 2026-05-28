@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/table";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { incomeApi } from "@/lib/api";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatCurrency, formatDate, getCurrentFY } from "@/lib/utils";
 
 const SOURCE_LABELS = {
   freelance: "Freelance Project",
@@ -65,16 +65,14 @@ const BLANK = {
 };
 
 export default function IncomePage() {
-  const [fy, setFy] = useState("2024-2025");
+  const [fy, setFy] = useState(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("fy") || getCurrentFY();
+    return getCurrentFY();
+  });
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(BLANK);
   const [search, setSearch] = useState("");
   const qc = useQueryClient();
-
-  useEffect(() => {
-    if (typeof window !== "undefined")
-      setFy(localStorage.getItem("fy") || "2024-2025");
-  }, []);
 
   const { data, isLoading } = useQuery({
     queryKey: ["income", fy],
@@ -128,7 +126,14 @@ export default function IncomePage() {
 
   function submit(e) {
     e.preventDefault();
-    if (!form.client_name || !form.amount) return;
+    if (!form.client_name || !form.amount) {
+      toast.error("Please fill in client name and amount");
+      return;
+    }
+    if (parseFloat(form.amount) <= 0) {
+      toast.error("Amount must be greater than zero");
+      return;
+    }
     addMutation.mutate(form);
   }
 

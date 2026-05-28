@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   CheckCircle2,
   Circle,
@@ -116,6 +116,11 @@ const ITR_ROUTES = [
 
 export default function CompliancePage() {
   const [done, setDone] = useState(new Set());
+  const [fy, setFy] = useState("2024-2025");
+  useEffect(() => {
+    if (typeof window !== "undefined")
+      setFy(localStorage.getItem("fy") || "2024-2025");
+  }, []);
 
   function toggle(id) {
     setDone((prev) => {
@@ -140,7 +145,7 @@ export default function CompliancePage() {
           <div>
             <h1 className="text-xl font-bold text-zinc-900">Compliance</h1>
             <p className="text-sm text-zinc-500 mt-0.5">
-              FY 2024-2025 checklist and ITR guidance
+              FY {fy?.replace("-", "\u2013")} checklist and ITR guidance
             </p>
           </div>
           <div className="text-right">

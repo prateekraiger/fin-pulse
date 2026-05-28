@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/table";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { expensesApi } from "@/lib/api";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatCurrency, formatDate, getCurrentFY } from "@/lib/utils";
 
 const CATS = [
   { value: "saas_tools", label: "SaaS Tools" },
@@ -55,17 +55,15 @@ const BLANK = {
 };
 
 export default function ExpensesPage() {
-  const [fy, setFy] = useState("2024-2025");
+  const [fy, setFy] = useState(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("fy") || getCurrentFY();
+    return getCurrentFY();
+  });
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(BLANK);
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState("all");
   const qc = useQueryClient();
-
-  useEffect(() => {
-    if (typeof window !== "undefined")
-      setFy(localStorage.getItem("fy") || "2024-2025");
-  }, []);
 
   const { data, isLoading } = useQuery({
     queryKey: ["expenses", fy],
@@ -133,7 +131,14 @@ export default function ExpensesPage() {
 
   function submit(e) {
     e.preventDefault();
-    if (!form.description || !form.amount) return;
+    if (!form.description || !form.amount) {
+      toast.error("Please fill in description and amount");
+      return;
+    }
+    if (parseFloat(form.amount) <= 0) {
+      toast.error("Amount must be greater than zero");
+      return;
+    }
     addMutation.mutate(form);
   }
 

@@ -4,6 +4,22 @@ function getUserId(req) {
   return req.headers.get("x-user-id") || "demo-user";
 }
 
+// Whitelist of allowed columns to prevent SQL injection via dynamic column names
+const ALLOWED_UPDATE_FIELDS = new Set([
+  "invoice_number",
+  "client_name",
+  "description",
+  "amount",
+  "gst_applied",
+  "gst_amount",
+  "total_amount",
+  "invoice_date",
+  "due_date",
+  "payment_status",
+  "payment_date",
+  "notes",
+]);
+
 // List invoices
 export async function GET(request) {
   try {
@@ -46,11 +62,17 @@ export async function POST(request) {
         { error: "Missing required fields" },
         { status: 400 },
       );
-    const gst_amount = gst_applied ? parseFloat(amount) * 0.18 : 0;
-    const total_amount = parseFloat(amount) + gst_amount;
+
+    // Validate amount
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount < 0)
+      return Response.json({ error: "Invalid amount" }, { status: 400 });
+
+    const gst_amount = gst_applied ? parsedAmount * 0.18 : 0;
+    const total_amount = parsedAmount + gst_amount;
     const [invoice] = await sql`
       INSERT INTO invoices (user_id, fy, invoice_number, client_name, description, amount, gst_applied, gst_amount, total_amount, invoice_date, due_date, payment_status, notes)
-      VALUES (${userId}, ${fy}, ${invoice_number || null}, ${client_name}, ${description || null}, ${amount}, ${gst_applied}, ${gst_amount}, ${total_amount}, ${invoice_date}, ${due_date || null}, ${payment_status}, ${notes || null})
+      VALUES (${userId}, ${fy}, ${invoice_number || null}, ${client_name}, ${description || null}, ${parsedAmount}, ${gst_applied}, ${gst_amount}, ${total_amount}, ${invoice_date}, ${due_date || null}, ${payment_status}, ${notes || null})
       RETURNING *
     `;
     return Response.json({ invoice });
@@ -63,13 +85,26 @@ export async function POST(request) {
   }
 }
 
-// Update invoice
+// Validates a column name is safe for SQL interpolation (defense-in-depth)
+function isSafeColumnName(name) {
+  return /^[a-z_][a-z0-9_]*$/.test(name);
+}
+
+// Update invoice -- uses whitelist + regex validation to prevent SQL injection
 export async function PUT(request) {
   try {
     const userId = getUserId(request);
     const body = await request.json();
-    const { id, ...updates } = body;
+    const { id, ...rawUpdates } = body;
     if (!id) return Response.json({ error: "ID required" }, { status: 400 });
+
+    // Filter to only allowed fields AND validate column name format
+    const updates = {};
+    for (const [key, value] of Object.entries(rawUpdates)) {
+      if (ALLOWED_UPDATE_FIELDS.has(key) && isSafeColumnName(key)) {
+        updates[key] = value;
+      }
+    }
 
     if (updates.amount !== undefined || updates.gst_applied !== undefined) {
       const [current] =
@@ -88,8 +123,10 @@ export async function PUT(request) {
 
     const fields = Object.keys(updates);
     if (!fields.length)
-      return Response.json({ error: "No fields to update" }, { status: 400 });
-    const setClauses = fields.map((k, i) => `${k} = $${i + 3}`).join(", ");
+      return Response.json({ error: "No valid fields to update" }, { status: 400 });
+
+    // Build parameterized query — column names are from the validated whitelist only
+    const setClauses = fields.map((k, i) => `"${k}" = $${i + 3}`).join(", ");
     const result = await sql(
       `UPDATE invoices SET ${setClauses}, updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING *`,
       [id, userId, ...fields.map((k) => updates[k])],

@@ -1,11 +1,12 @@
 "use client";
 import { useState } from "react";
+import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import { Zap, ArrowRight, CheckCircle2, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import { cn, getFYOptions } from "@/lib/utils";
 
 const STATES = [
   { name: "Andhra Pradesh", category: "normal" },
@@ -62,15 +63,17 @@ const PROFILES = [
 ];
 
 export default function OnboardingPage() {
+  const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [submitting, setSubmitting] = useState(false);
+  const fyOptions = getFYOptions();
   const [form, setForm] = useState({
     profile_type: "",
     state: "",
     state_category: "",
     service_type: "",
     digital_receipts_majority: false,
-    current_fy: "2024-2025",
+    current_fy: getFYOptions()[0]?.value || "2025-2026",
   });
   const selectedState = STATES.find((s) => s.name === form.state);
 
@@ -98,8 +101,8 @@ export default function OnboardingPage() {
       toast.success("Profile set up!");
       if (typeof window !== "undefined") {
         localStorage.setItem("fy", form.current_fy);
-        window.location.href = "/dashboard";
       }
+      navigate("/dashboard", { replace: true });
     } catch {
       toast.error("Something went wrong. Try again.");
     } finally {
@@ -115,7 +118,7 @@ export default function OnboardingPage() {
             <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
               <Zap size={16} className="text-zinc-900" />
             </div>
-            <span className="font-bold text-lg">FreelanceTax</span>
+            <span className="font-bold text-lg">FinPulse</span>
           </div>
           <div className="space-y-6">
             {[
@@ -135,8 +138,7 @@ export default function OnboardingPage() {
           </div>
         </div>
         <p className="text-xs text-zinc-500">
-          Built for Indian freelancers earning from Upwork, clients, brands &
-          more.
+          Built for Indian freelancers, creators & consultants to track income, expenses & taxes.
         </p>
       </div>
       <div className="flex-1 flex items-center justify-center p-6">
@@ -309,8 +311,11 @@ export default function OnboardingPage() {
                     }
                     className="h-9"
                   >
-                    <option value="2024-2025">FY 2024-25</option>
-                    <option value="2023-2024">FY 2023-24</option>
+                    {fyOptions.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
                   </Select>
                 </div>
                 <label className="flex items-start gap-3 bg-zinc-50 border border-zinc-200 rounded-xl p-4 cursor-pointer hover:border-zinc-300 transition-colors">

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
   TrendingUp,
@@ -19,7 +20,7 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { dashboardApi, gstApi, taxApi } from "@/lib/api";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, getCurrentFY } from "@/lib/utils";
 
 function StatCard({ icon: Icon, label, value, sub, loading, dark }) {
   return (
@@ -74,11 +75,11 @@ const GST_COLORS = {
 };
 
 export default function DashboardPage() {
-  const [fy, setFy] = useState("2024-2025");
-  useEffect(() => {
-    if (typeof window !== "undefined")
-      setFy(localStorage.getItem("fy") || "2024-2025");
-  }, []);
+  const navigate = useNavigate();
+  const [fy, setFy] = useState(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("fy") || getCurrentFY();
+    return getCurrentFY();
+  });
 
   const { data: dash, isLoading: dashLoading } = useQuery({
     queryKey: ["dashboard", fy],
@@ -124,17 +125,13 @@ export default function DashboardPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => {
-                window.location.href = "/income";
-              }}
+              onClick={() => navigate("/income")}
             >
               <TrendingUp size={14} /> Add Income
             </Button>
             <Button
               size="sm"
-              onClick={() => {
-                window.location.href = "/invoices";
-              }}
+              onClick={() => navigate("/invoices")}
             >
               <FileText size={14} /> New Invoice
             </Button>

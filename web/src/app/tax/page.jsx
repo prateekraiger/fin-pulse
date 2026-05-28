@@ -20,14 +20,13 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { taxApi } from "@/lib/api";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatCurrency, formatDate, getCurrentFY } from "@/lib/utils";
 
 export default function TaxPage() {
-  const [fy, setFy] = useState("2024-2025");
-  useEffect(() => {
-    if (typeof window !== "undefined")
-      setFy(localStorage.getItem("fy") || "2024-2025");
-  }, []);
+  const [fy, setFy] = useState(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("fy") || getCurrentFY();
+    return getCurrentFY();
+  });
 
   const {
     data: tax,
