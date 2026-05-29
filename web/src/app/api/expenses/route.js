@@ -1,10 +1,20 @@
 import sql from "@/app/api/utils/sql";
+import {
+  getUserId,
+  requireFY,
+  requireString,
+  requirePositiveNumber,
+  requireDate,
+  requireId,
+  filterToAllowedFields,
+  buildUpdateQuery,
+  errorResponse,
+  jsonResponse,
+  serverError,
+  parseJsonBody,
+} from "@/app/api/utils/helpers";
 
-function getUserId(req) {
-  return req.headers.get("x-user-id") || "demo-user";
-}
-
-// Whitelist of allowed columns to prevent SQL injection via dynamic column names
+// Whitelist of columns that may be updated via PUT
 const ALLOWED_UPDATE_FIELDS = new Set([
   "category",
   "description",
@@ -17,31 +27,39 @@ const ALLOWED_UPDATE_FIELDS = new Set([
   "notes",
 ]);
 
-// List expenses
+// ---------------------------------------------------------------------------
+// GET /api/expenses?fy=2024-25
+// ---------------------------------------------------------------------------
 export async function GET(request) {
   try {
     const userId = getUserId(request);
     const { searchParams } = new URL(request.url);
     const fy = searchParams.get("fy");
-    if (!fy)
-      return Response.json({ error: "fy parameter required" }, { status: 400 });
-    const expenses =
-      await sql`SELECT * FROM expenses WHERE user_id = ${userId} AND fy = ${fy} ORDER BY expense_date DESC`;
-    return Response.json({ expenses });
+
+    const fyCheck = requireFY(fy);
+    if (!fyCheck.valid) return errorResponse(fyCheck.error, 400);
+
+    const expenses = await sql`
+      SELECT * FROM expenses
+      WHERE user_id = ${userId} AND fy = ${fy}
+      ORDER BY expense_date DESC
+    `;
+
+    return jsonResponse({ expenses });
   } catch (error) {
-    console.error("GET /api/expenses:", error);
-    return Response.json(
-      { error: "Failed to fetch expenses" },
-      { status: 500 },
-    );
+    return serverError("GET /api/expenses", error);
   }
 }
 
-// Create expense
+// ---------------------------------------------------------------------------
+// POST /api/expenses
+// ---------------------------------------------------------------------------
 export async function POST(request) {
   try {
     const userId = getUserId(request);
-    const body = await request.json();
+    const { data: body, error: parseErr } = await parseJsonBody(request);
+    if (parseErr) return parseErr;
+
     const {
       fy,
       category,
@@ -49,102 +67,130 @@ export async function POST(request) {
       amount,
       expense_date,
       is_recurring = false,
-      recurring_frequency,
+      recurring_frequency = null,
       business_percentage = 100,
-      receipt_url,
-      notes,
+      receipt_url = null,
+      notes = null,
     } = body;
-    if (!fy || !category || !description || !amount || !expense_date)
-      return Response.json(
-        { error: "Missing required fields" },
-        { status: 400 },
-      );
 
-    // Validate amount is a positive number
-    const parsedAmount = parseFloat(amount);
-    if (isNaN(parsedAmount) || parsedAmount < 0)
-      return Response.json({ error: "Invalid amount" }, { status: 400 });
+    // --- Validation ---------------------------------------------------------
+    const fyCheck = requireFY(fy);
+    if (!fyCheck.valid) return errorResponse(fyCheck.error, 400);
 
-    // Validate business_percentage is 0-100
-    const parsedBizPct = parseFloat(business_percentage);
-    if (isNaN(parsedBizPct) || parsedBizPct < 0 || parsedBizPct > 100)
-      return Response.json(
-        { error: "Business percentage must be 0-100" },
-        { status: 400 },
-      );
+    for (const [val, name] of [
+      [category, "category"],
+      [description, "description"],
+    ]) {
+      const check = requireString(val, name);
+      if (!check.valid) return errorResponse(check.error, 400);
+    }
 
+    const amountCheck = requirePositiveNumber(amount, "amount");
+    if (!amountCheck.valid) return errorResponse(amountCheck.error, 400);
+
+    const dateCheck = requireDate(expense_date, "expense_date");
+    if (!dateCheck.valid) return errorResponse(dateCheck.error, 400);
+
+    const bizPctCheck = requirePositiveNumber(business_percentage, "business_percentage", { max: 100 });
+    if (!bizPctCheck.valid) return errorResponse(bizPctCheck.error, 400);
+
+    // --- Insert -------------------------------------------------------------
     const [expense] = await sql`
-      INSERT INTO expenses (user_id, fy, category, description, amount, expense_date, is_recurring, recurring_frequency, business_percentage, receipt_url, notes)
-      VALUES (${userId}, ${fy}, ${category}, ${description}, ${parsedAmount}, ${expense_date}, ${is_recurring}, ${recurring_frequency || null}, ${parsedBizPct}, ${receipt_url || null}, ${notes || null})
+      INSERT INTO expenses (
+        user_id, fy, category, description, amount, expense_date,
+        is_recurring, recurring_frequency, business_percentage,
+        receipt_url, notes
+      ) VALUES (
+        ${userId}, ${fy}, ${category}, ${description}, ${amountCheck.parsed},
+        ${expense_date}, ${!!is_recurring}, ${recurring_frequency},
+        ${bizPctCheck.parsed}, ${receipt_url}, ${notes}
+      )
       RETURNING *
     `;
-    return Response.json({ expense });
+
+    return jsonResponse({ expense }, 201);
   } catch (error) {
-    console.error("POST /api/expenses:", error);
-    return Response.json(
-      { error: "Failed to create expense" },
-      { status: 500 },
-    );
+    return serverError("POST /api/expenses", error);
   }
 }
 
-// Validates a column name is safe for SQL interpolation (defense-in-depth)
-function isSafeColumnName(name) {
-  return /^[a-z_][a-z0-9_]*$/.test(name);
-}
-
-// Update expense -- uses whitelist + regex validation to prevent SQL injection
+// ---------------------------------------------------------------------------
+// PUT /api/expenses  { id, ...fields }
+// ---------------------------------------------------------------------------
 export async function PUT(request) {
   try {
     const userId = getUserId(request);
-    const body = await request.json();
-    const { id, ...updates } = body;
-    if (!id) return Response.json({ error: "ID required" }, { status: 400 });
+    const { data: body, error: parseErr } = await parseJsonBody(request);
+    if (parseErr) return parseErr;
 
-    // Filter to only allowed fields AND validate column name format
-    const safeUpdates = {};
-    for (const [key, value] of Object.entries(updates)) {
-      if (ALLOWED_UPDATE_FIELDS.has(key) && isSafeColumnName(key)) {
-        safeUpdates[key] = value;
-      }
+    const { id, ...rawUpdates } = body;
+
+    const idCheck = requireId(id);
+    if (!idCheck.valid) return errorResponse(idCheck.error, 400);
+
+    // Filter to safe, allowed fields
+    const safeUpdates = filterToAllowedFields(rawUpdates, ALLOWED_UPDATE_FIELDS);
+
+    // Validate amount if present
+    if (safeUpdates.amount !== undefined) {
+      const check = requirePositiveNumber(safeUpdates.amount, "amount");
+      if (!check.valid) return errorResponse(check.error, 400);
+      safeUpdates.amount = check.parsed;
+    }
+
+    // Validate business_percentage if present
+    if (safeUpdates.business_percentage !== undefined) {
+      const check = requirePositiveNumber(safeUpdates.business_percentage, "business_percentage", { max: 100 });
+      if (!check.valid) return errorResponse(check.error, 400);
+      safeUpdates.business_percentage = check.parsed;
+    }
+
+    // Validate expense_date if present
+    if (safeUpdates.expense_date !== undefined) {
+      const check = requireDate(safeUpdates.expense_date, "expense_date");
+      if (!check.valid) return errorResponse(check.error, 400);
     }
 
     const fields = Object.keys(safeUpdates);
-    if (!fields.length)
-      return Response.json({ error: "No valid fields to update" }, { status: 400 });
+    if (!fields.length) {
+      return errorResponse("No valid fields to update", 400);
+    }
 
-    // Build parameterized query — column names are from the validated whitelist only
-    const setClauses = fields.map((k, i) => `"${k}" = $${i + 3}`).join(", ");
-    const result = await sql(
-      `UPDATE expenses SET ${setClauses}, updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING *`,
-      [id, userId, ...fields.map((k) => safeUpdates[k])],
-    );
-    if (!result.length)
-      return Response.json({ error: "Expense not found" }, { status: 404 });
-    return Response.json({ expense: result[0] });
+    const { query, params } = buildUpdateQuery("expenses", safeUpdates, userId, id);
+    const result = await sql(query, params);
+
+    if (!result.length) {
+      return errorResponse("Expense not found", 404);
+    }
+
+    return jsonResponse({ expense: result[0] });
   } catch (error) {
-    console.error("PUT /api/expenses:", error);
-    return Response.json(
-      { error: "Failed to update expense" },
-      { status: 500 },
-    );
+    return serverError("PUT /api/expenses", error);
   }
 }
 
-// Delete expense
+// ---------------------------------------------------------------------------
+// DELETE /api/expenses?id=<uuid>
+// ---------------------------------------------------------------------------
 export async function DELETE(request) {
   try {
     const userId = getUserId(request);
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
-    if (!id) return Response.json({ error: "ID required" }, { status: 400 });
-    await sql`DELETE FROM expenses WHERE id = ${id} AND user_id = ${userId}`;
-    return Response.json({ success: true });
+
+    const idCheck = requireId(id);
+    if (!idCheck.valid) return errorResponse(idCheck.error, 400);
+
+    const result = await sql`
+      DELETE FROM expenses WHERE id = ${id} AND user_id = ${userId} RETURNING id
+    `;
+
+    if (!result.length) {
+      return errorResponse("Expense not found or already deleted", 404);
+    }
+
+    return jsonResponse({ success: true });
   } catch (error) {
-    console.error("DELETE /api/expenses:", error);
-    return Response.json(
-      { error: "Failed to delete expense" },
-      { status: 500 },
-    );
+    return serverError("DELETE /api/expenses", error);
   }
 }

@@ -1,17 +1,28 @@
 import sql from "@/app/api/utils/sql";
+import {
+  getUserId,
+  requireFY,
+  requireString,
+  requirePositiveNumber,
+  requireDate,
+  requireId,
+  errorResponse,
+  jsonResponse,
+  serverError,
+  parseJsonBody,
+} from "@/app/api/utils/helpers";
 
-function getUserId(request) {
-  return request.headers.get("x-user-id") || "demo-user";
-}
-
+// ---------------------------------------------------------------------------
+// GET /api/tds?fy=2024-25
+// ---------------------------------------------------------------------------
 export async function GET(request) {
   try {
     const userId = getUserId(request);
     const { searchParams } = new URL(request.url);
     const fy = searchParams.get("fy");
 
-    if (!fy)
-      return Response.json({ error: "fy parameter required" }, { status: 400 });
+    const fyCheck = requireFY(fy);
+    if (!fyCheck.valid) return errorResponse(fyCheck.error, 400);
 
     const entries = await sql`
       SELECT * FROM tds_entries
@@ -19,83 +30,95 @@ export async function GET(request) {
       ORDER BY tds_date DESC
     `;
 
-    return Response.json({ entries });
+    return jsonResponse({ entries });
   } catch (error) {
-    console.error("GET /api/tds:", error);
-    return Response.json(
-      { error: "Failed to fetch TDS entries" },
-      { status: 500 },
-    );
+    return serverError("GET /api/tds", error);
   }
 }
 
+// ---------------------------------------------------------------------------
+// POST /api/tds
+// ---------------------------------------------------------------------------
 export async function POST(request) {
   try {
     const userId = getUserId(request);
-    const body = await request.json();
+    const { data: body, error: parseErr } = await parseJsonBody(request);
+    if (parseErr) return parseErr;
 
     const {
       fy,
       deductor_name,
-      deductor_tan,
+      deductor_tan = null,
       amount_credited,
       tds_deducted,
       tds_date,
       form_26as_verified = false,
-      notes,
+      notes = null,
     } = body;
 
-    if (
-      !fy ||
-      !deductor_name ||
-      !amount_credited ||
-      !tds_deducted ||
-      !tds_date
-    ) {
-      return Response.json(
-        { error: "Missing required fields" },
-        { status: 400 },
-      );
+    // --- Validation ---------------------------------------------------------
+    const fyCheck = requireFY(fy);
+    if (!fyCheck.valid) return errorResponse(fyCheck.error, 400);
+
+    const nameCheck = requireString(deductor_name, "deductor_name");
+    if (!nameCheck.valid) return errorResponse(nameCheck.error, 400);
+
+    const creditedCheck = requirePositiveNumber(amount_credited, "amount_credited");
+    if (!creditedCheck.valid) return errorResponse(creditedCheck.error, 400);
+
+    const tdsCheck = requirePositiveNumber(tds_deducted, "tds_deducted");
+    if (!tdsCheck.valid) return errorResponse(tdsCheck.error, 400);
+
+    const dateCheck = requireDate(tds_date, "tds_date");
+    if (!dateCheck.valid) return errorResponse(dateCheck.error, 400);
+
+    // Sanity: TDS deducted should not exceed amount credited
+    if (tdsCheck.parsed > creditedCheck.parsed) {
+      return errorResponse("tds_deducted cannot exceed amount_credited", 400);
     }
 
+    // --- Insert -------------------------------------------------------------
     const [entry] = await sql`
       INSERT INTO tds_entries (
         user_id, fy, deductor_name, deductor_tan,
         amount_credited, tds_deducted, tds_date,
         form_26as_verified, notes
       ) VALUES (
-        ${userId}, ${fy}, ${deductor_name}, ${deductor_tan || null},
-        ${amount_credited}, ${tds_deducted}, ${tds_date},
-        ${form_26as_verified}, ${notes || null}
+        ${userId}, ${fy}, ${deductor_name}, ${deductor_tan},
+        ${creditedCheck.parsed}, ${tdsCheck.parsed}, ${tds_date},
+        ${!!form_26as_verified}, ${notes}
       )
       RETURNING *
     `;
 
-    return Response.json({ entry });
+    return jsonResponse({ entry }, 201);
   } catch (error) {
-    console.error("POST /api/tds:", error);
-    return Response.json(
-      { error: "Failed to create TDS entry" },
-      { status: 500 },
-    );
+    return serverError("POST /api/tds", error);
   }
 }
 
+// ---------------------------------------------------------------------------
+// DELETE /api/tds?id=<uuid>
+// ---------------------------------------------------------------------------
 export async function DELETE(request) {
   try {
     const userId = getUserId(request);
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
 
-    if (!id) return Response.json({ error: "id required" }, { status: 400 });
+    const idCheck = requireId(id);
+    if (!idCheck.valid) return errorResponse(idCheck.error, 400);
 
-    await sql`DELETE FROM tds_entries WHERE id = ${id} AND user_id = ${userId}`;
-    return Response.json({ success: true });
+    const result = await sql`
+      DELETE FROM tds_entries WHERE id = ${id} AND user_id = ${userId} RETURNING id
+    `;
+
+    if (!result.length) {
+      return errorResponse("TDS entry not found or already deleted", 404);
+    }
+
+    return jsonResponse({ success: true });
   } catch (error) {
-    console.error("DELETE /api/tds:", error);
-    return Response.json(
-      { error: "Failed to delete TDS entry" },
-      { status: 500 },
-    );
+    return serverError("DELETE /api/tds", error);
   }
 }

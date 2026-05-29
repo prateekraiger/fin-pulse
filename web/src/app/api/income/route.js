@@ -1,10 +1,19 @@
 import sql from "@/app/api/utils/sql";
+import {
+  getUserId,
+  requireFY,
+  requireString,
+  requirePositiveNumber,
+  requireId,
+  filterToAllowedFields,
+  buildUpdateQuery,
+  errorResponse,
+  jsonResponse,
+  serverError,
+  parseJsonBody,
+} from "@/app/api/utils/helpers";
 
-function getUserId(req) {
-  return req.headers.get("x-user-id") || "demo-user";
-}
-
-// Whitelist of allowed columns to prevent SQL injection via dynamic column names
+// Whitelist of columns that may be updated via PUT
 const ALLOWED_UPDATE_FIELDS = new Set([
   "source_type",
   "client_name",
@@ -18,141 +27,177 @@ const ALLOWED_UPDATE_FIELDS = new Set([
   "invoice_id",
 ]);
 
-// List income entries
+// ---------------------------------------------------------------------------
+// GET /api/income?fy=2024-25
+// ---------------------------------------------------------------------------
 export async function GET(request) {
   try {
     const userId = getUserId(request);
     const { searchParams } = new URL(request.url);
     const fy = searchParams.get("fy");
-    if (!fy)
-      return Response.json({ error: "fy parameter required" }, { status: 400 });
-    const entries =
-      await sql`SELECT * FROM income_entries WHERE user_id = ${userId} AND fy = ${fy} ORDER BY settlement_date DESC NULLS LAST, created_at DESC`;
-    return Response.json({ entries });
+
+    const fyCheck = requireFY(fy);
+    if (!fyCheck.valid) return errorResponse(fyCheck.error, 400);
+
+    const entries = await sql`
+      SELECT * FROM income_entries
+      WHERE user_id = ${userId} AND fy = ${fy}
+      ORDER BY settlement_date DESC NULLS LAST, created_at DESC
+    `;
+
+    return jsonResponse({ entries });
   } catch (error) {
-    console.error("GET /api/income:", error);
-    return Response.json(
-      { error: "Failed to fetch income entries" },
-      { status: 500 },
-    );
+    return serverError("GET /api/income", error);
   }
 }
 
-// Create income entry
+// ---------------------------------------------------------------------------
+// POST /api/income
+// ---------------------------------------------------------------------------
 export async function POST(request) {
   try {
     const userId = getUserId(request);
-    const body = await request.json();
+    const { data: body, error: parseErr } = await parseJsonBody(request);
+    if (parseErr) return parseErr;
+
     const {
       fy,
       source_type,
       client_name,
-      description,
+      description = null,
       amount,
       currency = "INR",
       exchange_rate = 1,
       payment_status,
-      settlement_date,
-      invoice_id,
+      settlement_date = null,
+      invoice_id = null,
     } = body;
-    if (!fy || !source_type || !client_name || !amount || !payment_status)
-      return Response.json(
-        { error: "Missing required fields" },
-        { status: 400 },
-      );
 
-    // Validate amount is a positive number
-    const parsedAmount = parseFloat(amount);
-    if (isNaN(parsedAmount) || parsedAmount < 0)
-      return Response.json({ error: "Invalid amount" }, { status: 400 });
+    // --- Validation ---------------------------------------------------------
+    const fyCheck = requireFY(fy);
+    if (!fyCheck.valid) return errorResponse(fyCheck.error, 400);
 
-    const parsedRate = parseFloat(exchange_rate);
-    if (isNaN(parsedRate) || parsedRate <= 0)
-      return Response.json({ error: "Invalid exchange rate" }, { status: 400 });
+    for (const [val, name] of [
+      [source_type, "source_type"],
+      [client_name, "client_name"],
+      [payment_status, "payment_status"],
+    ]) {
+      const check = requireString(val, name);
+      if (!check.valid) return errorResponse(check.error, 400);
+    }
 
-    const inr_amount = parsedAmount * parsedRate;
+    const amountCheck = requirePositiveNumber(amount, "amount");
+    if (!amountCheck.valid) return errorResponse(amountCheck.error, 400);
+
+    const rateCheck = requirePositiveNumber(exchange_rate, "exchange_rate", { allowZero: false });
+    if (!rateCheck.valid) return errorResponse(rateCheck.error, 400);
+
+    const inr_amount = amountCheck.parsed * rateCheck.parsed;
+
+    // --- Insert -------------------------------------------------------------
     const [entry] = await sql`
-      INSERT INTO income_entries (user_id, fy, source_type, client_name, description, amount, currency, exchange_rate, inr_amount, payment_status, settlement_date, invoice_id)
-      VALUES (${userId}, ${fy}, ${source_type}, ${client_name}, ${description || null}, ${parsedAmount}, ${currency}, ${parsedRate}, ${inr_amount}, ${payment_status}, ${settlement_date || null}, ${invoice_id || null})
+      INSERT INTO income_entries (
+        user_id, fy, source_type, client_name, description,
+        amount, currency, exchange_rate, inr_amount,
+        payment_status, settlement_date, invoice_id
+      ) VALUES (
+        ${userId}, ${fy}, ${source_type}, ${client_name}, ${description},
+        ${amountCheck.parsed}, ${currency}, ${rateCheck.parsed}, ${inr_amount},
+        ${payment_status}, ${settlement_date}, ${invoice_id}
+      )
       RETURNING *
     `;
-    return Response.json({ entry });
+
+    return jsonResponse({ entry }, 201);
   } catch (error) {
-    console.error("POST /api/income:", error);
-    return Response.json(
-      { error: "Failed to create income entry" },
-      { status: 500 },
-    );
+    return serverError("POST /api/income", error);
   }
 }
 
-// Validates a column name is safe for SQL interpolation (defense-in-depth)
-function isSafeColumnName(name) {
-  return /^[a-z_][a-z0-9_]*$/.test(name);
-}
-
-// Update income entry -- uses whitelist + regex validation to prevent SQL injection
+// ---------------------------------------------------------------------------
+// PUT /api/income  { id, ...fields }
+// ---------------------------------------------------------------------------
 export async function PUT(request) {
   try {
     const userId = getUserId(request);
-    const body = await request.json();
-    const { id, ...rawUpdates } = body;
-    if (!id) return Response.json({ error: "ID required" }, { status: 400 });
+    const { data: body, error: parseErr } = await parseJsonBody(request);
+    if (parseErr) return parseErr;
 
-    // Filter to only allowed fields AND validate column name format
-    const updates = {};
-    for (const [key, value] of Object.entries(rawUpdates)) {
-      if (ALLOWED_UPDATE_FIELDS.has(key) && isSafeColumnName(key)) {
-        updates[key] = value;
-      }
+    const { id, ...rawUpdates } = body;
+
+    const idCheck = requireId(id);
+    if (!idCheck.valid) return errorResponse(idCheck.error, 400);
+
+    // Filter to safe, allowed fields
+    const updates = filterToAllowedFields(rawUpdates, ALLOWED_UPDATE_FIELDS);
+
+    // Validate amount if present
+    if (updates.amount !== undefined) {
+      const check = requirePositiveNumber(updates.amount, "amount");
+      if (!check.valid) return errorResponse(check.error, 400);
+      updates.amount = check.parsed;
     }
 
+    // Validate exchange_rate if present
+    if (updates.exchange_rate !== undefined) {
+      const check = requirePositiveNumber(updates.exchange_rate, "exchange_rate", { allowZero: false });
+      if (!check.valid) return errorResponse(check.error, 400);
+      updates.exchange_rate = check.parsed;
+    }
+
+    // Re-compute inr_amount when amount or exchange_rate changes
     if (updates.amount !== undefined || updates.exchange_rate !== undefined) {
-      const [current] =
-        await sql`SELECT amount, exchange_rate FROM income_entries WHERE id = ${id} AND user_id = ${userId}`;
-      if (!current)
-        return Response.json({ error: "Entry not found" }, { status: 404 });
-      const amount = updates.amount ?? current.amount;
-      const exchange_rate = updates.exchange_rate ?? current.exchange_rate;
-      updates.inr_amount = parseFloat(amount) * parseFloat(exchange_rate);
+      const [current] = await sql`
+        SELECT amount, exchange_rate FROM income_entries
+        WHERE id = ${id} AND user_id = ${userId}
+      `;
+      if (!current) return errorResponse("Entry not found", 404);
+
+      const finalAmount = updates.amount ?? parseFloat(current.amount);
+      const finalRate = updates.exchange_rate ?? parseFloat(current.exchange_rate);
+      updates.inr_amount = finalAmount * finalRate;
     }
 
     const fields = Object.keys(updates);
-    if (!fields.length)
-      return Response.json({ error: "No valid fields to update" }, { status: 400 });
+    if (!fields.length) {
+      return errorResponse("No valid fields to update", 400);
+    }
 
-    // Build parameterized query — column names are from the validated whitelist only
-    const setClauses = fields.map((k, i) => `"${k}" = $${i + 3}`).join(", ");
-    const result = await sql(
-      `UPDATE income_entries SET ${setClauses}, updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING *`,
-      [id, userId, ...fields.map((k) => updates[k])],
-    );
-    if (!result.length)
-      return Response.json({ error: "Entry not found" }, { status: 404 });
-    return Response.json({ entry: result[0] });
+    const { query, params } = buildUpdateQuery("income_entries", updates, userId, id);
+    const result = await sql(query, params);
+
+    if (!result.length) {
+      return errorResponse("Entry not found", 404);
+    }
+
+    return jsonResponse({ entry: result[0] });
   } catch (error) {
-    console.error("PUT /api/income:", error);
-    return Response.json(
-      { error: "Failed to update income entry" },
-      { status: 500 },
-    );
+    return serverError("PUT /api/income", error);
   }
 }
 
-// Delete income entry
+// ---------------------------------------------------------------------------
+// DELETE /api/income?id=<uuid>
+// ---------------------------------------------------------------------------
 export async function DELETE(request) {
   try {
     const userId = getUserId(request);
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
-    if (!id) return Response.json({ error: "ID required" }, { status: 400 });
-    await sql`DELETE FROM income_entries WHERE id = ${id} AND user_id = ${userId}`;
-    return Response.json({ success: true });
+
+    const idCheck = requireId(id);
+    if (!idCheck.valid) return errorResponse(idCheck.error, 400);
+
+    const result = await sql`
+      DELETE FROM income_entries WHERE id = ${id} AND user_id = ${userId} RETURNING id
+    `;
+
+    if (!result.length) {
+      return errorResponse("Entry not found or already deleted", 404);
+    }
+
+    return jsonResponse({ success: true });
   } catch (error) {
-    console.error("DELETE /api/income:", error);
-    return Response.json(
-      { error: "Failed to delete income entry" },
-      { status: 500 },
-    );
+    return serverError("DELETE /api/income", error);
   }
 }
